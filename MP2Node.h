@@ -58,6 +58,10 @@ private:
 	unordered_map<int, vector<bool>> transRepliesStatus;
 	// read transactions values
 	unordered_map<int, vector<string>> readReplyVal;
+	// transaction message
+	unordered_map<int, string> transMsg;
+	// waitTime for transID
+	unordered_map<int, int> transIDWaitTime;
 
 public:
 	MP2Node(Member *memberNode, Params *par, EmulNet *emulNet, Log *log, Address *addressOfMember);
@@ -70,13 +74,16 @@ public:
 		int res = this->transID++;
 		return res;
 	}
-	void multicastToReplicas(Message *msg);
+	void multicastToReplicas(Message *msg, bool isReplica);
+	string latestValueFromReadReply(vector<string> &reply);
+	vector<string> extractValuesFromReply(vector<string> &reply);
+	bool checkPresence(Node n, vector<Node> &list);
 
 	// ring functionalities
 	void updateRing();
 	vector<Node> getMembershipList();
 	size_t hashFunction(string key);
-	void findNeighbors();
+	vector<Node> findNeighbors(size_t hash, vector<Node> localNodes);
 
 	// client side CRUD APIs
 	void clientCreate(string key, string value);
@@ -104,7 +111,7 @@ public:
 	bool deletekey(string key, int transID);
 
 	// stabilization protocol - handle multiple failures
-	void stabilizationProtocol();
+	void stabilizationProtocol(vector<Node> currMemberList);
 
 	~MP2Node();
 };

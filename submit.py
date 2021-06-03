@@ -27,11 +27,11 @@ class NullDevice:
     pass
 
 def submit():   
-  print '==\n== [sandbox] Submitting Solutions \n=='
+  print('==\n== [sandbox] Submitting Solutions \n==')
   
   (login, password) = loginPrompt()
   if not login:
-    print '!! Submission Cancelled'
+    print('!! Submission Cancelled')
     return
 
 
@@ -56,11 +56,11 @@ def basicPrompt():
   return login, password
 
 def partPrompt():
-  print 'Hello! These are the assignment parts that you can submit:'
+  print('Hello! These are the assignment parts that you can submit:')
   counter = 0
   for part in partFriendlyNames:
     counter += 1
-    print str(counter) + ') ' + partFriendlyNames[counter - 1]
+    print(str(counter) + ') ' + partFriendlyNames[counter - 1])
   partIdx = int(raw_input('Please enter which part you want to submit (1-' + str(counter) + '): ')) - 1
   return (partIdx, partIds[partIdx])
 

@@ -59,7 +59,50 @@ void MP2Node::updateRing()
 	/*
 	 * Step 3: Run the stabilization protocol IF REQUIRED
 	 */
-	// Run stabilization protocol if the hash table size is greater than zero and if there has been a changed in the ring
+	if (ring.size() == 0)
+	{
+		ring = curMemList;
+	}
+	else if (ring.size() != curMemList.size())
+	{
+		change = true;
+	}
+	else
+	{
+		for (Node n : ring)
+		{
+			if (!checkPresence(n, curMemList))
+			{
+				change = true;
+				break;
+			}
+		}
+	}
+
+	if (change)
+	{
+		stabilizationProtocol(curMemList);
+		ring = curMemList;
+	}
+	else
+	{
+		ring = curMemList;
+	}
+	sort(this->ring.begin(), this->ring.end());
+}
+
+bool MP2Node::checkPresence(Node n, vector<Node> &list)
+{
+	auto itr = lower_bound(list.begin(), list.end(), n) - list.begin();
+	if (itr == list.size())
+	{
+		return false;
+	}
+	else if (list[itr].nodeHashCode == n.nodeHashCode)
+	{
+		return true;
+	}
+	return false;
 }
 
 /**
@@ -125,7 +168,9 @@ void MP2Node::clientCreate(string key, string value)
 
 	Message *newMsg = new Message(_transID, _currAddr, _msgType, key, value, _replicaType);
 	operationTransID["create"].insert(_transID);
-	multicastToReplicas(newMsg);
+	transMsg[_transID] = newMsg->toString();
+	transIDWaitTime[_transID] = par->getcurrtime();
+	multicastToReplicas(newMsg, true);
 }
 
 /**
@@ -148,7 +193,9 @@ void MP2Node::clientRead(string key)
 
 	Message *newMsg = new Message(_transID, _currAddr, _msgType, key);
 	operationTransID["read"].insert(_transID);
-	multicastToReplicas(newMsg);
+	transMsg[_transID] = newMsg->toString();
+	transIDWaitTime[_transID] = par->getcurrtime();
+	multicastToReplicas(newMsg, false);
 }
 
 /**
@@ -172,7 +219,9 @@ void MP2Node::clientUpdate(string key, string value)
 
 	Message *newMsg = new Message(_transID, _currAddr, _msgType, key, value, _replicaType);
 	operationTransID["update"].insert(_transID);
-	multicastToReplicas(newMsg);
+	transMsg[_transID] = newMsg->toString();
+	transIDWaitTime[_transID] = par->getcurrtime();
+	multicastToReplicas(newMsg, true);
 }
 
 /**
@@ -195,7 +244,9 @@ void MP2Node::clientDelete(string key)
 
 	Message *newMsg = new Message(_transID, _currAddr, _msgType, key);
 	operationTransID["delete"].insert(_transID);
-	multicastToReplicas(newMsg);
+	transMsg[_transID] = newMsg->toString();
+	transIDWaitTime[_transID] = par->getcurrtime();
+	multicastToReplicas(newMsg, false);
 }
 
 /**
@@ -203,7 +254,7 @@ void MP2Node::clientDelete(string key)
  * 
  * DESCRIPTION: This function multicast the message to replicas
  */
-void MP2Node::multicastToReplicas(Message *msg)
+void MP2Node::multicastToReplicas(Message *msg, bool isReplica)
 {
 	vector<Node> replicas = findNodes(msg->key);
 	Address toAddr;
@@ -211,13 +262,20 @@ void MP2Node::multicastToReplicas(Message *msg)
 	{
 		toAddr = n.nodeAddress;
 		emulNet->ENsend(&(memberNode->addr), &toAddr, msg->toString());
-		if (msg->replica == PRIMARY)
+		if (isReplica)
 		{
-			msg->replica = SECONDARY;
-		}
-		else if (msg->replica == SECONDARY)
-		{
-			msg->replica = TERTIARY;
+			if (msg->replica == PRIMARY)
+			{
+				msg->replica = SECONDARY;
+			}
+			else if (msg->replica == SECONDARY)
+			{
+				msg->replica = TERTIARY;
+			}
+			else if (msg->replica == TERTIARY)
+			{
+				msg->replica = PRIMARY;
+			}
 		}
 	}
 	replicas.clear();
@@ -475,7 +533,160 @@ void MP2Node::checkMessages()
 	 */
 	for (auto itr : operationTransID)
 	{
+		if (itr.first == "read")
+		{
+			set<int> temp = itr.second;
+			for (int tId : temp)
+			{
+				Message *msg = new Message(transMsg[tId]);
+				vector<string> valuesFromReplies = extractValuesFromReply(readReplyVal[tId]);
+				string latestValue = latestValueFromReadReply(readReplyVal[tId]);
+				if (latestValue != "" && count(valuesFromReplies.begin(), valuesFromReplies.end(), latestValue) > 1)
+				{
+					readReplyVal.erase(tId);
+					transIDWaitTime.erase(tId);
+					operationTransID["read"].erase(tId);
+					log->logReadSuccess(&(msg->fromAddr), true, tId, msg->key, latestValue);
+				}
+				else
+				{
+					if (par->getcurrtime() - transIDWaitTime[tId] > 5)
+					{
+						readReplyVal.erase(tId);
+						transIDWaitTime.erase(tId);
+						operationTransID["read"].erase(tId);
+						log->logReadFail(&(msg->fromAddr), true, tId, msg->key);
+					}
+				}
+			}
+		}
 	}
+	for (auto itr : operationTransID)
+	{
+		if (itr.first == "read")
+		{
+			continue;
+		}
+		else
+		{
+			set<int> temp = itr.second;
+			for (int tId : temp)
+			{
+				Message *msg = new Message(transMsg[tId]);
+				string key = msg->key;
+				if (itr.first == "create")
+				{
+					string val = msg->value;
+					if (count(transRepliesStatus[tId].begin(), transRepliesStatus[tId].end(), true) > 1)
+					{
+						transRepliesStatus.erase(tId);
+						transIDWaitTime.erase(tId);
+						operationTransID["create"].erase(tId);
+						log->logCreateSuccess(&(msg->fromAddr), true, tId, key, val);
+					}
+					else
+					{
+						if (par->getcurrtime() - transIDWaitTime[tId] > 5)
+						{
+							transRepliesStatus.erase(tId);
+							transIDWaitTime.erase(tId);
+							operationTransID["create"].erase(tId);
+							log->logCreateFail(&(msg->fromAddr), true, tId, key, val);
+						}
+					}
+				}
+				else if (itr.first == "update")
+				{
+					string val = msg->value;
+					if (count(transRepliesStatus[tId].begin(), transRepliesStatus[tId].end(), true) > 1)
+					{
+						transRepliesStatus.erase(tId);
+						transIDWaitTime.erase(tId);
+						operationTransID["update"].erase(tId);
+						log->logUpdateSuccess(&(msg->fromAddr), true, tId, key, val);
+					}
+					else
+					{
+						if (par->getcurrtime() - transIDWaitTime[tId] > 5)
+						{
+							transRepliesStatus.erase(tId);
+							transIDWaitTime.erase(tId);
+							operationTransID["update"].erase(tId);
+							log->logUpdateFail(&(msg->fromAddr), true, tId, key, val);
+						}
+					}
+				}
+				else if (itr.first == "delete")
+				{
+					if (count(transRepliesStatus[tId].begin(), transRepliesStatus[tId].end(), true) > 1)
+					{
+						transRepliesStatus.erase(tId);
+						transIDWaitTime.erase(tId);
+						operationTransID["delete"].erase(tId);
+						log->logDeleteSuccess(&(msg->fromAddr), true, tId, key);
+					}
+					else
+					{
+						if (par->getcurrtime() - transIDWaitTime[tId] > 5)
+						{
+							transRepliesStatus.erase(tId);
+							transIDWaitTime.erase(tId);
+							operationTransID["delete"].erase(tId);
+							log->logDeleteFail(&(msg->fromAddr), true, tId, key);
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+/**
+ * FUNCTION NAME: latestValueFromReadReply
+ * 
+ * DESCRIPTION: Returns latest value from read reply if exist
+ * 				otherwise ""(empty string)
+ */
+string MP2Node::latestValueFromReadReply(vector<string> &reply)
+{
+	string latest = "";
+	int mxTime = -1;
+	for (string s : reply)
+	{
+		if (s != "")
+		{
+			Entry *en = new Entry(s);
+			if (en->timestamp >= mxTime)
+			{
+				mxTime = en->timestamp;
+				latest = en->value;
+			}
+		}
+	}
+	return latest;
+}
+
+/**
+ * FUNCTION NAME: extractValuesFromReply
+ * 
+ * DESCRIPTION: extracts value from replies and returns a vector consisting of values.
+ */
+vector<string> MP2Node::extractValuesFromReply(vector<string> &reply)
+{
+	vector<string> values;
+	for (string s : reply)
+	{
+		if (s != "")
+		{
+			Entry *en = new Entry(s);
+			values.push_back(en->value);
+		}
+		else
+		{
+			values.push_back("");
+		}
+	}
+	return values;
 }
 
 /**
@@ -508,6 +719,42 @@ vector<Node> MP2Node::findNodes(string key)
 					addr_vec.emplace_back(addr);
 					addr_vec.emplace_back(ring.at((i + 1) % ring.size()));
 					addr_vec.emplace_back(ring.at((i + 2) % ring.size()));
+					break;
+				}
+			}
+		}
+	}
+	return addr_vec;
+}
+
+/**
+ * FUNCTION NAME: findNeighbor
+ * DESCRIPTION: Find the neighbor of the given hashcode
+ */
+vector<Node> MP2Node::findNeighbors(size_t hash, vector<Node> localNodes)
+{
+
+	vector<Node> addr_vec;
+	if (localNodes.size() >= 3)
+	{
+		// if pos <= min || pos > max, the leader is the min
+		if (hash <= localNodes.at(0).getHashCode() || hash > localNodes.at(localNodes.size() - 1).getHashCode())
+		{
+			addr_vec.emplace_back(localNodes.at(0));
+			addr_vec.emplace_back(localNodes.at(1));
+			addr_vec.emplace_back(localNodes.at(2));
+		}
+		else
+		{
+			// go through the localNodes until pos <= node
+			for (int i = 1; i < localNodes.size(); i++)
+			{
+				Node addr = localNodes.at(i);
+				if (hash <= addr.getHashCode())
+				{
+					addr_vec.emplace_back(addr);
+					addr_vec.emplace_back(localNodes.at((i + 1) % localNodes.size()));
+					addr_vec.emplace_back(localNodes.at((i + 2) % localNodes.size()));
 					break;
 				}
 			}
@@ -552,9 +799,183 @@ int MP2Node::enqueueWrapper(void *env, char *buff, int size)
  *				1) Ensures that there are three "CORRECT" replicas of all the keys in spite of failures and joins
  *				Note:- "CORRECT" replicas implies that every key is replicated in its two neighboring nodes in the ring
  */
-void MP2Node::stabilizationProtocol()
+void MP2Node::stabilizationProtocol(vector<Node> currMemberList)
 {
 	/*
 	 * Implement this
 	 */
+	int transactionID = 0;
+	int index = 0;
+	bool isPresent = false;
+	bool ishasReplica = false;
+	bool ishaveReplica = false;
+	bool rep_success = false;
+	size_t pos;
+	Address fromAddr;
+	Address toAddr;
+	string key;
+	string value;
+	Entry *entryobj;
+	Message *reply_msg;
+	MessageType _type;
+	ReplicaType _replica;
+	Node selfNode;
+	Node failedNode;
+	Node failedHasMyReplicaNode;
+	Node newPrimaryNode;
+	vector<Node>::iterator ringNodes_Iterator;
+	vector<Node>::iterator currMemberNodes_Iterator;
+	vector<Node>::iterator failedNodes_Iterator;
+	vector<Node>::iterator hasMyReplica_Iterator;
+	vector<Node>::iterator haveMyReplica_Iterator;
+	map<string, string>::iterator hashtable_Iterator;
+
+	/* Detect Failure Node */
+	vector<Node> failNodes;
+	vector<Node> replicaNodes_vec;
+	vector<Node> localNodes;
+
+	pos = (Node(this->getMemberNode()->addr)).getHashCode();
+	fromAddr = this->getMemberNode()->addr;
+	selfNode = Node(this->getMemberNode()->addr);
+
+	for (ringNodes_Iterator = this->ring.begin(); ringNodes_Iterator != this->ring.end(); ++ringNodes_Iterator)
+	{
+		isPresent = false;
+		if (checkPresence(*ringNodes_Iterator, currMemberList))
+			isPresent = true;
+		if (!isPresent)
+			failNodes.emplace_back(Node((*ringNodes_Iterator).nodeAddress));
+	}
+
+	// CASE 1 :- If the failed replica node is not in my has and have group. In that case just update the ring.
+
+	for (failedNodes_Iterator = failNodes.begin(); failedNodes_Iterator < failNodes.end(); ++failedNodes_Iterator)
+	{
+		if (checkPresence(*failedNodes_Iterator, this->hasMyReplicas))
+		{
+			ishasReplica = true;
+			failedHasMyReplicaNode = *failedNodes_Iterator;
+			break;
+		}
+	}
+
+	for (failedNodes_Iterator = failNodes.begin(); failedNodes_Iterator < failNodes.end(); ++failedNodes_Iterator)
+	{
+		if (checkPresence(*failedNodes_Iterator, this->haveReplicasOf))
+		{
+			ishaveReplica = true;
+			failedNode = *failedNodes_Iterator;
+			break;
+		}
+	}
+	localNodes = currMemberList;
+	replicaNodes_vec.clear();
+	if (ishasReplica)
+	{
+		replicaNodes_vec = findNeighbors(pos, localNodes);
+
+		index = findNodePosition(failedHasMyReplicaNode, this->hasMyReplicas);
+		this->hasMyReplicas.erase(this->hasMyReplicas.begin() + index);
+		this->hasMyReplicas.emplace_back(replicaNodes_vec.at(2));
+
+		for (auto itr : ht->hashTable)
+		{
+			key = itr.first;
+			value = itr.second;
+			entryobj = new Entry(value);
+			if (entryobj->replica == PRIMARY)
+			{
+
+				// CREATE Message for New Tertiary Node
+				transactionID = getTransID();
+				_type = CREATE;
+				_replica = TERTIARY;
+				toAddr = replicaNodes_vec.at(2).nodeAddress;
+
+				reply_msg = new Message(transactionID, fromAddr, _type, key, entryobj->value, _replica);
+				emulNet->ENsend(&fromAddr, &toAddr, reply_msg->toString());
+			}
+		}
+		replicaNodes_vec.clear();
+		ishasReplica = false;
+	}
+	replicaNodes_vec.clear();
+	if (ishaveReplica)
+	{
+
+		// Find My Neighbors
+		replicaNodes_vec = findNeighbors(pos, localNodes);
+
+		if (this->haveReplicasOf[0].nodeHashCode == failedNode.getHashCode())
+		{
+			for (auto itr : ht->hashTable)
+			{
+				key = itr.first;
+				value = itr.second;
+				entryobj = new Entry(value);
+				if (entryobj->replica == SECONDARY)
+				{
+					// CREATE Message for New Tertiary Node
+					transactionID = getTransID();
+					_type = CREATE;
+					_replica = TERTIARY;
+					toAddr = replicaNodes_vec.at(2).nodeAddress;
+
+					reply_msg = new Message(transactionID, fromAddr, _type, key, entryobj->value, _replica);
+					emulNet->ENsend(&fromAddr, &toAddr, reply_msg->toString());
+
+					transactionID = getTransID();
+					_replica = PRIMARY;
+					rep_success = this->updateKeyValue(key, entryobj->value, _replica, transactionID);
+				}
+			}
+		}
+
+		replicaNodes_vec.clear();
+		if (this->haveReplicasOf.at(1).nodeHashCode == failedNode.getHashCode())
+		{
+			pos = failedNode.getHashCode();
+			// Find New Primary Node
+			replicaNodes_vec = findNeighbors(pos, this->ring);
+			newPrimaryNode = replicaNodes_vec.at(1);
+
+			index = findNodePosition(failedNode, this->haveReplicasOf);
+			this->haveReplicasOf.erase(this->haveReplicasOf.begin() + index);
+			this->haveReplicasOf.emplace_back(newPrimaryNode);
+
+			replicaNodes_vec.clear();
+			pos = selfNode.getHashCode();
+			replicaNodes_vec = findNeighbors(pos, localNodes);
+			this->hasMyReplicas.emplace_back(replicaNodes_vec[1]);
+
+			for (auto itr : ht->hashTable)
+			{
+				key = itr.first;
+				value = itr.second;
+				entryobj = new Entry(value);
+				if (entryobj->replica == TERTIARY)
+				{
+					transactionID = getTransID();
+					_type = UPDATE;
+					_replica = PRIMARY;
+					toAddr = newPrimaryNode.nodeAddress;
+
+					reply_msg = new Message(transactionID, fromAddr, _type, key, entryobj->value, _replica);
+					emulNet->ENsend(&fromAddr, &toAddr, reply_msg->toString());
+
+					// CREATE Message for New Tertiary Node
+					transactionID = getTransID();
+					_type = CREATE;
+					_replica = TERTIARY;
+					toAddr = replicaNodes_vec.at(1).nodeAddress;
+
+					reply_msg = new Message(transactionID, fromAddr, _type, key, entryobj->value, _replica);
+					emulNet->ENsend(&fromAddr, &toAddr, reply_msg->toString());
+				}
+			}
+		}
+		replicaNodes_vec.clear();
+		ishaveReplica = false;
+	}
 }
