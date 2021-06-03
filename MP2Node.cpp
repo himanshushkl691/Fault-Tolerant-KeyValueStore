@@ -473,7 +473,9 @@ void MP2Node::checkMessages()
 	 * This function should also ensure all READ and UPDATE operation
 	 * get QUORUM replies
 	 */
-	
+	for (auto itr : operationTransID)
+	{
+	}
 }
 
 /**
